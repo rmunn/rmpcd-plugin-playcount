@@ -3,6 +3,7 @@
 ---@field padding_factor_milliseconds? integer
 ---@field padding_factor_seconds? integer
 ---@field sticker_name? string
+---@field from? "start" | "end"
 
 ---@class PlayCountPlugin : RmpcdPlugin<PlayCountPluginArgs>
 ---@field enabled boolean
@@ -20,7 +21,8 @@ local M = {
     timeout_handle = nil;
     last_incremented_song_id = nil;
     padding_factor_ms = DEFAULT_PADDING_FACTOR_MS;
-    sticker_name = DEFAULT_STICKER_NAME
+    sticker_name = DEFAULT_STICKER_NAME;
+    from = "end";
 }
 
 -- Sometimes MPD has sond durations in ms, others in a { secs, nanos } structure. Here we handle both.
@@ -59,6 +61,27 @@ M.increment_playcount = function(self, file, song_id)
     end
 end
 
+-- Calculate the target position in the song. Returns a negative value if target position would be past end of song.
+-- Calling code will interpret negative values as "already reached, increment immediately if we haven't already"
+---@param song_duration_ms number
+function M.calculate_target_position(self, song_duration_ms)
+    -- Short songs get play count incremented right away, no waiting
+    if self.padding_factor_ms >= song_duration_ms then return -1 end
+    if self.from == "start" then
+        -- Padding factor or song duration, whichever is shorter
+        return self.padding_factor_ms
+    else
+        return song_duration_ms - self.padding_factor_ms
+    end
+end
+
+---@param song_duration_ms number
+---@param already_elapsed_ms number
+function M.calculate_time_to_wait(self, song_duration_ms, already_elapsed_ms)
+    local target = self.calculate_target_position(self, song_duration_ms)
+    return target - already_elapsed_ms
+end
+
 -- Set up the timeout for N (configurable, default 15) seconds before the end of the song
 -- Once the timeout fires, we will increment the song's playCount sticker
 -- We use the song's id (a unique value assigned by MPD) to ensure we never double-increment for a single play
@@ -70,14 +93,14 @@ end
 M.setup_timeout = function(self, song, already_elapsed_ms)
     self.cancel_timeout(self)
     already_elapsed_ms = already_elapsed_ms or 0
-    local remaining_play_time_ms = duration_in_ms(song.duration) - already_elapsed_ms
-    if remaining_play_time_ms < self.padding_factor_ms then
-        -- Short songs get play count incremented right away, no waiting
+    local time_to_wait_ms = self.calculate_time_to_wait(self, duration_in_ms(song.duration), already_elapsed_ms)
+    if time_to_wait_ms <= 0 then
+        -- Already past target time: either it was a short song, or we were paused and unpaused.
+        -- Either way, increment now without waiting
         self.increment_playcount(self, song.file, song.id)
     else
-        -- Longer songs wait until song has 15 seconds (or less) to go, then increment play count
-        local wait_ms = remaining_play_time_ms - self.padding_factor_ms
-        self.timeout_handle = sync.set_timeout(wait_ms, function ()
+        -- Wait until chosen target time (by default, when song has 15 seconds (or less) to go), then increment play count
+        self.timeout_handle = sync.set_timeout(time_to_wait_ms, function ()
             self.increment_playcount(self, song.file, song.id)
         end)
     end
@@ -140,8 +163,15 @@ M.setup = function(self, args)
     if args.padding_factor_milliseconds ~= nil then
         self.padding_factor_ms = args.padding_factor_milliseconds
     end
-    if (args.sticker_name) then
+    if args.sticker_name then
         self.sticker_name = args.sticker_name
+    end
+    if args.from then
+        if args.from == "start" or args.from == "end" then
+            self.from = args.from
+        else
+            log.warn("\"from\" parameter should be either \"start\" or \"end\" (default \"end\"). Ignoring unknown value \"" .. args.from .. "\"")
+        end
     end
 
     -- Same logic for resiming after pause (check times elapsed, etc) works here too, so just reuse it
@@ -195,6 +225,12 @@ M.message = function(self, _channel, message)
         local new_name = string.sub(message, len)
         if new_name ~= nil then
             self.sticker_name = new_name
+        end
+    elseif string.find(message, "from:") == 1 then
+        local len = string.len("from:")
+        local new_from = string.sub(message, len)
+        if new_from ~= nil and (new_from == "start" or new_from == "end") then
+            self.from = new_from
         end
     end
 end
