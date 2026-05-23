@@ -4,15 +4,20 @@
 ---@field padding_factor_seconds? integer
 ---@field sticker_name? string
 ---@field from? "start" | "end"
+---@field target_fraction? number
+---@field target_percent? number
 
 ---@class PlayCountPlugin : RmpcdPlugin<PlayCountPluginArgs>
 ---@field enabled boolean
 ---@field timeout_handle table|nil
 ---@field last_incremented_song_id integer|nil
 ---@field padding_factor_ms integer
+---@field from? "start" | "end"
+---@field target_fraction number|nil
 ---@field sticker_name string
 
 local DEFAULT_PADDING_FACTOR_MS = 15000 -- 15 seconds
+local SAFETY_FACTOR_MS = 2000 -- 2 seconds
 local DEFAULT_STICKER_NAME = "playCount";
 
 ---@class PlayCountPlugin
@@ -21,8 +26,9 @@ local M = {
     timeout_handle = nil;
     last_incremented_song_id = nil;
     padding_factor_ms = DEFAULT_PADDING_FACTOR_MS;
-    sticker_name = DEFAULT_STICKER_NAME;
     from = "end";
+    target_fraction = nil;
+    sticker_name = DEFAULT_STICKER_NAME;
 }
 
 -- Sometimes MPD has sond durations in ms, others in a { secs, nanos } structure. Here we handle both.
@@ -68,10 +74,26 @@ function M.calculate_target_position(self, song_duration_ms)
     -- Short songs get play count incremented right away, no waiting
     if self.padding_factor_ms >= song_duration_ms then return -1 end
     if self.from == "start" then
-        -- Padding factor or song duration, whichever is shorter
-        return self.padding_factor_ms
+        if self.target_fraction ~= nil then
+            -- Target desired fraction of song, but ensure at least padding_factor remaining
+            local target = song_duration_ms * self.target_fraction
+            return math.min(target, song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS))
+        else
+            -- No fraction specified, so just return the requested distance from start of song
+            -- (Though leave at least 2 seconds before end of song, just for safety's sake)
+            local target = self.padding_factor_ms
+            return math.min(target, song_duration_ms - SAFETY_FACTOR_MS)
+        end
     else
-        return song_duration_ms - self.padding_factor_ms
+        if self.target_fraction ~= nil then
+            -- Target desired fraction of song (calculating from END), but ensure at least padding_factor remaining
+            local target = song_duration_ms * (1 - self.target_fraction)
+            return math.min(target, song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS))
+        else
+            -- No fraction specified, so just return the requested distance from end of song
+            -- (Though leave at least 2 seconds before end of song, just for safety's sake)
+            return song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS)
+        end
     end
 end
 
@@ -152,10 +174,37 @@ M.state_change = function(self, old, new)
     if new == "play" then self.resume_after_pause(self) end
 end
 
+--- @param value number
+--- @param warning string
+M.clamp_between_0_and_1 = function(self, value, warning)
+    if value < 0 then
+        log.warn(warning)
+        return 0
+    elseif value > 1 then
+        log.warn(warning)
+        return 1
+    end
+    return value
+end
+
 M.setup = function(self, args)
     self.enabled = (args.enabled ~= nil) and args.enabled or true
     if args.padding_factor_milliseconds ~= nil and args.padding_factor_seconds ~= nil then
         log.warn("Both milliseconds and seconds were set for padding_factor. Using milliseconds and *IGNORING* seconds. Padding factor will be set to " .. args.padding_factor_milliseconds .. " ms, which is " .. args.padding_factor_milliseconds / 1000 .. " seconds.")
+    end
+    if args.padding_factor_seconds ~= nil then
+        self.padding_factor_ms = args.padding_factor_seconds * 1000
+    end
+    if args.padding_factor_milliseconds ~= nil then
+        self.padding_factor_ms = args.padding_factor_milliseconds
+    end
+    if args.target_fraction ~= nil then
+        if args.target_percent ~= nil then
+            log.warn("Both target_percent and target_fraction were set. Using target_fraction and *IGNORING* target_percent.")
+        end
+        self.target_fraction = self.clamp_between_0_and_1(self, args.target_fraction, "The target_fraction parameter should be between 0 and 1.")
+    elseif args.target_percent ~= nil then
+        self.target_fraction = self.clamp_between_0_and_1(self, args.target_percent / 100, "The target_percent parameter should be between 0 and 100.")
     end
     if args.padding_factor_seconds ~= nil then
         self.padding_factor_ms = args.padding_factor_seconds * 1000
@@ -236,3 +285,5 @@ M.message = function(self, _channel, message)
 end
 
 return M
+
+-- TODO: Message for target_fraction and target_percent
