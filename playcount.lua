@@ -73,27 +73,23 @@ end
 function M.calculate_target_position(self, song_duration_ms)
     -- Short songs get play count incremented right away, no waiting
     if self.padding_factor_ms >= song_duration_ms then return -1 end
+    if self.target_fraction ~= nil then
+        -- Target desired fraction of song, but ensure at least padding_factor remaining
+        local target = song_duration_ms * self.target_fraction
+        return math.min(target, song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS))
+    end
+    -- No fraction specified, so just return the requested distance from start/end of song
+    -- (Though leave at least 2 seconds before end of song, just for safety's sake)
     if self.from == "start" then
-        if self.target_fraction ~= nil then
-            -- Target desired fraction of song, but ensure at least padding_factor remaining
-            local target = song_duration_ms * self.target_fraction
-            return math.min(target, song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS))
-        else
-            -- No fraction specified, so just return the requested distance from start of song
-            -- (Though leave at least 2 seconds before end of song, just for safety's sake)
-            local target = self.padding_factor_ms
-            return math.min(target, song_duration_ms - SAFETY_FACTOR_MS)
-        end
+        local target = self.padding_factor_ms
+        return math.min(target, song_duration_ms - SAFETY_FACTOR_MS)
     else
-        if self.target_fraction ~= nil then
-            -- Target desired fraction of song (calculating from END), but ensure at least padding_factor remaining
-            local target = song_duration_ms * (1 - self.target_fraction)
-            return math.min(target, song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS))
-        else
-            -- No fraction specified, so just return the requested distance from end of song
-            -- (Though leave at least 2 seconds before end of song, just for safety's sake)
-            return song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS)
-        end
+        -- Could do it this way:
+        -- local target = song_duration_ms - self.padding_factor_ms
+        -- return math.min(target, song_duration_ms - SAFETY_FACTOR_MS)
+        -- But the below is exactly equivalent to that, and does one fewer subtraction
+        return song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS)
+    end
     end
 end
 
@@ -264,7 +260,32 @@ M.message = function(self, _channel, message)
         if ms ~= nil then
             self.padding_factor_ms = ms
         end
-
+    -- Changing parameters on-the-fly: target fraction
+    elseif string.find(message, "target_fraction:") == 1 then
+        local len = string.len("target_fraction:")
+        local fraction = string.sub(message, len) -- Do not call tonumber yet
+        local slash = string.find(fraction, "/")
+        if slash ~= nil then
+            local numerator = string.sub(fraction, 0, slash)
+            local denominator = string.sub(fraction, slash+1)
+            local fractionValue = tonumber(numerator) / tonumber(denominator)
+            self.target_fraction = self.clamp_between_0_and_1(self, fractionValue, "The target_fraction parameter should be between 0 and 1.")
+        else
+            -- No slash? Maybe it's one number written like 0.75
+            local number = tonumber(fraction)
+            if number ~= nil then
+                self.target_fraction = self.clamp_between_0_and_1(self, number, "The target_fraction parameter should be between 0 and 1.")
+            else
+                log.warn("target_fraction message should have payload that is either a fraction like 2/3 (two numbers separated by a slash, with no spaces), or else a single number between 0 and 1 (like 0.75). Instead, found " .. fraction)
+            end
+        end
+    -- Changing parameters on-the-fly: target percent
+    elseif string.find(message, "target_percent:") == 1 then
+        local len = string.len("target_percent:")
+        local percent = tonumber(string.sub(message, len))
+        if percent ~= nil then
+            self.target_fraction = self.clamp_between_0_and_1(self, percent / 100, "The target_percent parameter should be between 0 and 100.")
+        end
     -- Changing parameters on-the-fly: sticker name
     -- CAUTION: No attempt is made to validate the new name. Make sure you spelled it the way you want it to be spelled!
     -- Note also that no attempt is made to search the sticker database and rename anything from the old name to the new name
@@ -285,5 +306,3 @@ M.message = function(self, _channel, message)
 end
 
 return M
-
--- TODO: Message for target_fraction and target_percent
