@@ -90,7 +90,6 @@ function M.calculate_target_position(self, song_duration_ms)
         -- But the below is exactly equivalent to that, and does one fewer subtraction
         return song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS)
     end
-    end
 end
 
 ---@param song_duration_ms number
