@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Can now increment playCount from start of song as well as from end
 - Can choose start/end at setup time, or while plugin is running via messages
+- New parameter `target_fraction` to let increment point be based on song length
+  - Example: `setup({target_fraction = 2/3})` to increment playCount when
+    a song has played for two-thirds of its total duration
+  - Value should be between 0 and 1
+- New parameter `target_percent` similar to target_fraction
+  - Value should be between 0 and 100
+- target_fraction and target_percent configurable after plugin starts
+  - Format: `target_fraction:3/4` or `target_fraction:0.75`
+  - Or for percent: `target_percent:66.67` or `target_percent:75`
 
 ## [0.0.1] - 2026-05-09
 
