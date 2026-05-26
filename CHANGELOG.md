@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-05-26
+
 ### Added
 - Can now increment playCount from start of song as well as from end
 - Can choose start/end at setup time, or while plugin is running via messages
@@ -31,5 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sticker name configurable at setup time
 - Sticker name configurable by passing messages
 
-[Unreleased]: https://github.com/username/repo/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/username/repo/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/username/repo/releases/tag/v0.0.2
 [0.0.1]: https://github.com/username/repo/releases/tag/v0.0.1
