@@ -3,15 +3,21 @@
 ---@field padding_factor_milliseconds? integer
 ---@field padding_factor_seconds? integer
 ---@field sticker_name? string
+---@field from? "start" | "end"
+---@field target_fraction? number
+---@field target_percent? number
 
 ---@class PlayCountPlugin : RmpcdPlugin<PlayCountPluginArgs>
 ---@field enabled boolean
 ---@field timeout_handle table|nil
 ---@field last_incremented_song_id integer|nil
 ---@field padding_factor_ms integer
+---@field from? "start" | "end"
+---@field target_fraction number|nil
 ---@field sticker_name string
 
 local DEFAULT_PADDING_FACTOR_MS = 15000 -- 15 seconds
+local SAFETY_FACTOR_MS = 2000 -- 2 seconds
 local DEFAULT_STICKER_NAME = "playCount";
 
 ---@class PlayCountPlugin
@@ -20,7 +26,9 @@ local M = {
     timeout_handle = nil;
     last_incremented_song_id = nil;
     padding_factor_ms = DEFAULT_PADDING_FACTOR_MS;
-    sticker_name = DEFAULT_STICKER_NAME
+    from = "end";
+    target_fraction = nil;
+    sticker_name = DEFAULT_STICKER_NAME;
 }
 
 -- Sometimes MPD has sond durations in ms, others in a { secs, nanos } structure. Here we handle both.
@@ -59,6 +67,38 @@ M.increment_playcount = function(self, file, song_id)
     end
 end
 
+-- Calculate the target position in the song. Returns a negative value if target position would be past end of song.
+-- Calling code will interpret negative values as "already reached, increment immediately if we haven't already"
+---@param song_duration_ms number
+function M.calculate_target_position(self, song_duration_ms)
+    -- Short songs get play count incremented right away, no waiting
+    if self.padding_factor_ms >= song_duration_ms then return -1 end
+    if self.target_fraction ~= nil then
+        -- Target desired fraction of song, but ensure at least padding_factor remaining
+        local target = song_duration_ms * self.target_fraction
+        return math.min(target, song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS))
+    end
+    -- No fraction specified, so just return the requested distance from start/end of song
+    -- (Though leave at least 2 seconds before end of song, just for safety's sake)
+    if self.from == "start" then
+        local target = self.padding_factor_ms
+        return math.min(target, song_duration_ms - SAFETY_FACTOR_MS)
+    else
+        -- Could do it this way:
+        -- local target = song_duration_ms - self.padding_factor_ms
+        -- return math.min(target, song_duration_ms - SAFETY_FACTOR_MS)
+        -- But the below is exactly equivalent to that, and does one fewer subtraction
+        return song_duration_ms - math.max(self.padding_factor_ms, SAFETY_FACTOR_MS)
+    end
+end
+
+---@param song_duration_ms number
+---@param already_elapsed_ms number
+function M.calculate_time_to_wait(self, song_duration_ms, already_elapsed_ms)
+    local target = self.calculate_target_position(self, song_duration_ms)
+    return target - already_elapsed_ms
+end
+
 -- Set up the timeout for N (configurable, default 15) seconds before the end of the song
 -- Once the timeout fires, we will increment the song's playCount sticker
 -- We use the song's id (a unique value assigned by MPD) to ensure we never double-increment for a single play
@@ -70,14 +110,14 @@ end
 M.setup_timeout = function(self, song, already_elapsed_ms)
     self.cancel_timeout(self)
     already_elapsed_ms = already_elapsed_ms or 0
-    local remaining_play_time_ms = duration_in_ms(song.duration) - already_elapsed_ms
-    if remaining_play_time_ms < self.padding_factor_ms then
-        -- Short songs get play count incremented right away, no waiting
+    local time_to_wait_ms = self.calculate_time_to_wait(self, duration_in_ms(song.duration), already_elapsed_ms)
+    if time_to_wait_ms <= 0 then
+        -- Already past target time: either it was a short song, or we were paused and unpaused.
+        -- Either way, increment now without waiting
         self.increment_playcount(self, song.file, song.id)
     else
-        -- Longer songs wait until song has 15 seconds (or less) to go, then increment play count
-        local wait_ms = remaining_play_time_ms - self.padding_factor_ms
-        self.timeout_handle = sync.set_timeout(wait_ms, function ()
+        -- Wait until chosen target time (by default, when song has 15 seconds (or less) to go), then increment play count
+        self.timeout_handle = sync.set_timeout(time_to_wait_ms, function ()
             self.increment_playcount(self, song.file, song.id)
         end)
     end
@@ -129,6 +169,31 @@ M.state_change = function(self, old, new)
     if new == "play" then self.resume_after_pause(self) end
 end
 
+--- @param value number
+--- @param warning string
+M.clamp_between_0_and_1 = function(self, value, warning)
+    if value < 0 then
+        log.warn(warning)
+        return 0
+    elseif value > 1 then
+        log.warn(warning)
+        return 1
+    end
+    return value
+end
+
+M.parse_fraction = function(self, fractionStr)
+    local slash = string.find(fractionStr, "/")
+    if slash ~= nil then
+        local numerator = string.sub(fractionStr, 0, slash-1)
+        local denominator = string.sub(fractionStr, slash+1)
+        return tonumber(numerator) / tonumber(denominator)
+    else
+        -- No slash? Maybe it's one number written like 0.75
+        return tonumber(fractionStr)
+    end
+end
+
 M.setup = function(self, args)
     self.enabled = (args.enabled ~= nil) and args.enabled or true
     if args.padding_factor_milliseconds ~= nil and args.padding_factor_seconds ~= nil then
@@ -140,8 +205,29 @@ M.setup = function(self, args)
     if args.padding_factor_milliseconds ~= nil then
         self.padding_factor_ms = args.padding_factor_milliseconds
     end
-    if (args.sticker_name) then
+    if args.target_fraction ~= nil then
+        if args.target_percent ~= nil then
+            log.warn("Both target_percent and target_fraction were set. Using target_fraction and *IGNORING* target_percent.")
+        end
+        self.target_fraction = self.clamp_between_0_and_1(self, args.target_fraction, "The target_fraction parameter should be between 0 and 1.")
+    elseif args.target_percent ~= nil then
+        self.target_fraction = self.clamp_between_0_and_1(self, args.target_percent / 100, "The target_percent parameter should be between 0 and 100.")
+    end
+    if args.padding_factor_seconds ~= nil then
+        self.padding_factor_ms = args.padding_factor_seconds * 1000
+    end
+    if args.padding_factor_milliseconds ~= nil then
+        self.padding_factor_ms = args.padding_factor_milliseconds
+    end
+    if args.sticker_name then
         self.sticker_name = args.sticker_name
+    end
+    if args.from then
+        if args.from == "start" or args.from == "end" then
+            self.from = args.from
+        else
+            log.warn("\"from\" parameter should be either \"start\" or \"end\" (default \"end\"). Ignoring unknown value \"" .. args.from .. "\"")
+        end
     end
 
     -- Same logic for resiming after pause (check times elapsed, etc) works here too, so just reuse it
@@ -185,7 +271,23 @@ M.message = function(self, _channel, message)
         if ms ~= nil then
             self.padding_factor_ms = ms
         end
-
+    -- Changing parameters on-the-fly: target fraction
+    elseif string.find(message, "target_fraction:") == 1 then
+        local len = string.len("target_fraction:")
+        local fractionStr = string.sub(message, len) -- Do not call tonumber yet
+        local fractionValue = M.parse_fraction(self, fractionStr)
+        if fractionValue ~= nil then
+            self.target_fraction = self.clamp_between_0_and_1(self, fractionValue, "The target_fraction parameter should be between 0 and 1.")
+        else
+            log.warn("target_fraction message should have payload that is either a fraction like 2/3 (two numbers separated by a slash, with no spaces), or else a single number between 0 and 1 (like 0.75). Instead, found " .. fractionStr)
+        end
+    -- Changing parameters on-the-fly: target percent
+    elseif string.find(message, "target_percent:") == 1 then
+        local len = string.len("target_percent:")
+        local percent = tonumber(string.sub(message, len))
+        if percent ~= nil then
+            self.target_fraction = self.clamp_between_0_and_1(self, percent / 100, "The target_percent parameter should be between 0 and 100.")
+        end
     -- Changing parameters on-the-fly: sticker name
     -- CAUTION: No attempt is made to validate the new name. Make sure you spelled it the way you want it to be spelled!
     -- Note also that no attempt is made to search the sticker database and rename anything from the old name to the new name
@@ -195,6 +297,12 @@ M.message = function(self, _channel, message)
         local new_name = string.sub(message, len)
         if new_name ~= nil then
             self.sticker_name = new_name
+        end
+    elseif string.find(message, "from:") == 1 then
+        local len = string.len("from:")
+        local new_from = string.sub(message, len)
+        if new_from ~= nil and (new_from == "start" or new_from == "end") then
+            self.from = new_from
         end
     end
 end
