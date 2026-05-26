@@ -182,6 +182,18 @@ M.clamp_between_0_and_1 = function(self, value, warning)
     return value
 end
 
+M.parse_fraction = function(self, fractionStr)
+    local slash = string.find(fractionStr, "/")
+    if slash ~= nil then
+        local numerator = string.sub(fractionStr, 0, slash-1)
+        local denominator = string.sub(fractionStr, slash+1)
+        return tonumber(numerator) / tonumber(denominator)
+    else
+        -- No slash? Maybe it's one number written like 0.75
+        return tonumber(fractionStr)
+    end
+end
+
 M.setup = function(self, args)
     self.enabled = (args.enabled ~= nil) and args.enabled or true
     if args.padding_factor_milliseconds ~= nil and args.padding_factor_seconds ~= nil then
@@ -262,21 +274,12 @@ M.message = function(self, _channel, message)
     -- Changing parameters on-the-fly: target fraction
     elseif string.find(message, "target_fraction:") == 1 then
         local len = string.len("target_fraction:")
-        local fraction = string.sub(message, len) -- Do not call tonumber yet
-        local slash = string.find(fraction, "/")
-        if slash ~= nil then
-            local numerator = string.sub(fraction, 0, slash)
-            local denominator = string.sub(fraction, slash+1)
-            local fractionValue = tonumber(numerator) / tonumber(denominator)
+        local fractionStr = string.sub(message, len) -- Do not call tonumber yet
+        local fractionValue = M.parse_fraction(self, fractionStr)
+        if fractionValue ~= nil then
             self.target_fraction = self.clamp_between_0_and_1(self, fractionValue, "The target_fraction parameter should be between 0 and 1.")
         else
-            -- No slash? Maybe it's one number written like 0.75
-            local number = tonumber(fraction)
-            if number ~= nil then
-                self.target_fraction = self.clamp_between_0_and_1(self, number, "The target_fraction parameter should be between 0 and 1.")
-            else
-                log.warn("target_fraction message should have payload that is either a fraction like 2/3 (two numbers separated by a slash, with no spaces), or else a single number between 0 and 1 (like 0.75). Instead, found " .. fraction)
-            end
+            log.warn("target_fraction message should have payload that is either a fraction like 2/3 (two numbers separated by a slash, with no spaces), or else a single number between 0 and 1 (like 0.75). Instead, found " .. fractionStr)
         end
     -- Changing parameters on-the-fly: target percent
     elseif string.find(message, "target_percent:") == 1 then
