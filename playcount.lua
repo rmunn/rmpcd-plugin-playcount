@@ -39,7 +39,7 @@ end
 
 -- Will be called when new song starts playing, and in other situations where the existing timeout
 -- should be canceled (usually because it's being replaced by a new one)
-M.cancel_timeout = function(self)
+function M:cancel_timeout()
     if self.timeout_handle then
         self.timeout_handle.cancel()
         self.timeout_handle = nil
@@ -48,9 +48,9 @@ end
 
 --- @param file string
 --- @param song_id number
-M.increment_playcount = function(self, file, song_id)
+function M:increment_playcount(file, song_id)
     -- Do this first to ensure we won't be called again and possibly double-increment
-    self.cancel_timeout(self)
+    self:cancel_timeout()
     if song_id == self.last_incremented_song_id then
         -- This can happen if you pause and resume a song repeatedly within its last 15 seconds
         -- If that happens, we still only want to count a single play of the song
@@ -70,7 +70,7 @@ end
 -- Calculate the target position in the song. Returns a negative value if target position would be past end of song.
 -- Calling code will interpret negative values as "already reached, increment immediately if we haven't already"
 ---@param song_duration_ms number
-function M.calculate_target_position(self, song_duration_ms)
+function M:calculate_target_position(song_duration_ms)
     -- Short songs get play count incremented right away, no waiting
     if self.padding_factor_ms >= song_duration_ms then return -1 end
     if self.target_fraction ~= nil then
@@ -94,8 +94,8 @@ end
 
 ---@param song_duration_ms number
 ---@param already_elapsed_ms number
-function M.calculate_time_to_wait(self, song_duration_ms, already_elapsed_ms)
-    local target = self.calculate_target_position(self, song_duration_ms)
+function M:calculate_time_to_wait(song_duration_ms, already_elapsed_ms)
+    local target = self:calculate_target_position(song_duration_ms)
     return target - already_elapsed_ms
 end
 
@@ -107,18 +107,18 @@ end
 -- will change the calculation for how long the tieout needs to be so that it triggers N seconds before the song ends
 ---@param song QueuedSong
 ---@param already_elapsed_ms number
-M.setup_timeout = function(self, song, already_elapsed_ms)
-    self.cancel_timeout(self)
+function M:setup_timeout(song, already_elapsed_ms)
+    self:cancel_timeout()
     already_elapsed_ms = already_elapsed_ms or 0
-    local time_to_wait_ms = self.calculate_time_to_wait(self, duration_in_ms(song.duration), already_elapsed_ms)
+    local time_to_wait_ms = self:calculate_time_to_wait(duration_in_ms(song.duration), already_elapsed_ms)
     if time_to_wait_ms <= 0 then
         -- Already past target time: either it was a short song, or we were paused and unpaused.
         -- Either way, increment now without waiting
-        self.increment_playcount(self, song.file, song.id)
+        self:increment_playcount(song.file, song.id)
     else
         -- Wait until chosen target time (by default, when song has 15 seconds (or less) to go), then increment play count
         self.timeout_handle = sync.set_timeout(time_to_wait_ms, function ()
-            self.increment_playcount(self, song.file, song.id)
+            self:increment_playcount(song.file, song.id)
         end)
     end
 end
@@ -126,12 +126,12 @@ end
 -- Will be called when we unpause *or* when plugin starts up
 -- In both cases, we want to check whether a song is already playing,
 -- because the song's elapsed time needs to be taken into account when setting up the timeout
-M.resume_after_pause = function(self)
+function M:resume_after_pause()
     local status = mpd.get_status()
     if status and status.state == "play" then
         local song = mpd.get_current_song()
         if song then
-            self.setup_timeout(self, song, status.elapsed)
+            self:setup_timeout(song, status.elapsed)
         end
     end
 end
@@ -145,13 +145,13 @@ end
 -- being looped forever. If you want your playCount sticker to be incremented by 50 when a song loops 50 times,
 -- you can do `rmpc sticker get MySong.mp3 playCount` and then `rmpc sticker set mySong.mp3 playCount N`
 -- (where N = old value + 50) yourself, in a bash script or something.
-M.song_change = function(self, _old_song, new_song)
+function M:song_change(_old_song, new_song)
     if not self.enabled or new_song == nil or not new_song.file then
-        self.cancel_timeout(self)
+        self:cancel_timeout()
         return
     end
 
-    self.setup_timeout(self, new_song, 0)
+    self:setup_timeout(new_song, 0)
 end
 
 -- Will be called when playback is started, stopped or paused. A few cases need to be handled:
@@ -159,19 +159,19 @@ end
 -- Pausing playback = ditto, but when playback resumes the song's time elapsed so far will be counted
 -- Unpausing playback = the timeout (which was canceled when playback was paused) can should be restarted now
 -- Starting playback = 
-M.state_change = function(self, old, new)
+function M:state_change(old, new)
     if not self.enabled then
-        self.cancel_timeout(self)
+        self:cancel_timeout()
         return
     end
 
-    if new == "pause" or new == "stop" then self.cancel_timeout(self) end
-    if new == "play" then self.resume_after_pause(self) end
+    if new == "pause" or new == "stop" then self:cancel_timeout() end
+    if new == "play" then self:resume_after_pause() end
 end
 
 --- @param value number
 --- @param warning string
-M.clamp_between_0_and_1 = function(self, value, warning)
+function M:clamp_between_0_and_1(value, warning)
     if value < 0 then
         log.warn(warning)
         return 0
@@ -182,7 +182,7 @@ M.clamp_between_0_and_1 = function(self, value, warning)
     return value
 end
 
-M.parse_fraction = function(self, fractionStr)
+function M:parse_fraction(fractionStr)
     local slash = string.find(fractionStr, "/")
     if slash ~= nil then
         local numerator = string.sub(fractionStr, 0, slash-1)
@@ -194,7 +194,7 @@ M.parse_fraction = function(self, fractionStr)
     end
 end
 
-M.setup = function(self, args)
+function M:setup(args)
     self.enabled = (args.enabled ~= nil) and args.enabled or true
     if args.padding_factor_milliseconds ~= nil and args.padding_factor_seconds ~= nil then
         log.warn("Both milliseconds and seconds were set for padding_factor. Using milliseconds and *IGNORING* seconds. Padding factor will be set to " .. args.padding_factor_milliseconds .. " ms, which is " .. args.padding_factor_milliseconds / 1000 .. " seconds.")
@@ -209,9 +209,9 @@ M.setup = function(self, args)
         if args.target_percent ~= nil then
             log.warn("Both target_percent and target_fraction were set. Using target_fraction and *IGNORING* target_percent.")
         end
-        self.target_fraction = self.clamp_between_0_and_1(self, args.target_fraction, "The target_fraction parameter should be between 0 and 1.")
+        self.target_fraction = self:clamp_between_0_and_1(args.target_fraction, "The target_fraction parameter should be between 0 and 1.")
     elseif args.target_percent ~= nil then
-        self.target_fraction = self.clamp_between_0_and_1(self, args.target_percent / 100, "The target_percent parameter should be between 0 and 100.")
+        self.target_fraction = self:clamp_between_0_and_1(args.target_percent / 100, "The target_percent parameter should be between 0 and 100.")
     end
     if args.padding_factor_seconds ~= nil then
         self.padding_factor_ms = args.padding_factor_seconds * 1000
@@ -235,7 +235,7 @@ M.setup = function(self, args)
     -- But by setting a timeout of 0, we ensure we get queued up to run immediately after rmpcd setup completes
     -- This neatly solves the chicken-and-egg problem
     sync.set_timeout(0, function ()
-      self.resume_after_pause(self)
+      self:resume_after_pause()
     end)
 end
 
@@ -243,7 +243,7 @@ end
 M.subscribed_channels = { "rmpcd.playcount", "rmpcd.playCount" }
 
 -- We can ignore the channel here because we're only subscribed to our own comm channels
-M.message = function(self, _channel, message)
+function M:message(_channel, message)
     -- Turning plugin on/off
     if message == "enable" then
         log.info("Enabling playcount plugin")
@@ -275,9 +275,9 @@ M.message = function(self, _channel, message)
     elseif string.find(message, "target_fraction:") == 1 then
         local len = string.len("target_fraction:")
         local fractionStr = string.sub(message, len) -- Do not call tonumber yet
-        local fractionValue = M.parse_fraction(self, fractionStr)
+        local fractionValue = self:parse_fraction(fractionStr)
         if fractionValue ~= nil then
-            self.target_fraction = self.clamp_between_0_and_1(self, fractionValue, "The target_fraction parameter should be between 0 and 1.")
+            self.target_fraction = self:clamp_between_0_and_1(fractionValue, "The target_fraction parameter should be between 0 and 1.")
         else
             log.warn("target_fraction message should have payload that is either a fraction like 2/3 (two numbers separated by a slash, with no spaces), or else a single number between 0 and 1 (like 0.75). Instead, found " .. fractionStr)
         end
@@ -286,7 +286,7 @@ M.message = function(self, _channel, message)
         local len = string.len("target_percent:")
         local percent = tonumber(string.sub(message, len))
         if percent ~= nil then
-            self.target_fraction = self.clamp_between_0_and_1(self, percent / 100, "The target_percent parameter should be between 0 and 100.")
+            self.target_fraction = self:clamp_between_0_and_1(percent / 100, "The target_percent parameter should be between 0 and 100.")
         end
     -- Changing parameters on-the-fly: sticker name
     -- CAUTION: No attempt is made to validate the new name. Make sure you spelled it the way you want it to be spelled!
