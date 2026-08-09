@@ -23,6 +23,14 @@ To use this plugin:
     ```
     You can also use `padding_factor_milliseconds` instead of `padding_factor_seconds` if you like, e.g. `padding_factor_milliseconds=2500` for 2.5 seconds of padding. (I recommend at least 5 seconds of padding, but I haven't tested it). Another option you can change is the `sticker_name`, though you should use the sticker name `playCount` (the default) if you want to be able to interoperate with other MPD clients. (See https://github.com/jcorporation/mpd-stickers for a useful list of what stickers are used by what MPD clients).
 
+7. (Optional) Other options
+    ```lua
+    rmpcd.install('plugins.playcount'):setup({
+      target_fraction = 1/3,
+      loop = true
+    })
+    ```
+
 ### License
 
 BSD 3-Clause open-source license; see [LICENSE](LICENSE) for complete copyright and license statement.
